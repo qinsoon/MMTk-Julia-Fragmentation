@@ -3,7 +3,9 @@ use crate::julia_types::*;
 use crate::slots::JuliaVMSlot;
 use crate::slots::OffsetSlot;
 use crate::JULIA_BUFF_TAG;
+use crate::jl_symbol_name;
 use memoffset::offset_of;
+use mmtk::memory_manager;
 use mmtk::util::{Address, ObjectReference};
 use mmtk::vm::slot::SimpleSlot;
 use mmtk::vm::SlotVisitor;
@@ -174,7 +176,7 @@ pub unsafe fn scan_julia_object<SV: SlotVisitor<JuliaVMSlot>>(obj: Address, clos
 
             let ta = obj.to_ptr::<jl_task_t>();
 
-            mmtk_scan_gcstack(ta, closure);
+            mmtk_scan_gcstack(ta, closure, None);
 
             let layout = (*jl_task_type).layout;
             debug_assert!((*layout).fielddesc_type_custom() == 0);
@@ -246,12 +248,49 @@ pub unsafe fn scan_julia_object<SV: SlotVisitor<JuliaVMSlot>>(obj: Address, clos
             let owner_addr = mmtk_jl_genericmemory_data_owner_field_address(m);
             process_slot(closure, owner_addr);
 
+            let ptr_addr = Address::from_ptr((*m).ptr);
+            // m.ptr might be an internal pointer
+            // find the beginning of the object and trace it since the object may have moved
+            if crate::object_model::is_addr_in_immixspace(ptr_addr) {
+                let object =
+                    memory_manager::find_object_from_internal_pointer(ptr_addr, usize::MAX)
+                        .unwrap();
+                let offset = Address::from_ptr((*m).ptr) - object.to_raw_address();
+                let ptr_address = Address::from_ptr((::std::ptr::addr_of!((*m).ptr)));
+                process_offset_slot(closure, ptr_address, offset);
+            }
+
             return;
         }
 
         if (*m).length == 0 {
             return;
         }
+
+        if how == 1 {
+            let ptr_addr = Address::from_ptr((*m).ptr);
+            // m.ptr might be an internal pointer
+            // find the beginning of the object and trace it since the object may have moved
+            if crate::object_model::is_addr_in_immixspace(ptr_addr) {
+                let object =
+                    memory_manager::find_object_from_internal_pointer(ptr_addr, usize::MAX)
+                        .unwrap();
+                let offset = Address::from_ptr((*m).ptr) - object.to_raw_address();
+                println!(
+                    "obj = {}, m->ptr = {}, offset = {}",
+                    object.to_raw_address(),
+                    Address::from_ptr((*m).ptr),
+                    offset
+                );
+                let ptr_address = Address::from_ptr((::std::ptr::addr_of!((*m).ptr)));
+                process_offset_slot(closure, ptr_address, offset);
+                return;
+            }
+        }
+
+        // m.ptr is interior to the same object
+        // or malloced
+        // debug_assert!((how == 0 || how == 2) && is_malloced_obj() || is_interior_pointer())
 
         let layout = (*vt).layout;
         if (*layout).flags.arrayelem_isboxed() != 0 {
@@ -376,10 +415,68 @@ unsafe fn mmtk_jl_genericmemory_data_owner_field_address(m: *const jl_genericmem
 //     mmtk_jl_genericmemory_data_owner_field_address(m).load::<*const mmtk_jl_value_t>()
 // }
 
-pub unsafe fn mmtk_scan_gcstack<EV: SlotVisitor<JuliaVMSlot>>(
+pub unsafe fn mmtk_scan_gcpreserve_stack<'a, EV: SlotVisitor<JuliaVMSlot>>(
     ta: *const jl_task_t,
-    closure: &mut EV,
+    closure: &'a mut EV,
 ) {
+    // process transitively pinning stack
+    let mut s = (*ta).gcpreserve_stack;
+    let (offset, lb, ub) = (0 as isize, 0 as u64, u64::MAX);
+
+    if s != std::ptr::null_mut() {
+        let s_nroots_addr = ::std::ptr::addr_of!((*s).nroots);
+        let mut nroots = read_stack(Address::from_ptr(s_nroots_addr), offset, lb, ub);
+        debug_assert!(nroots.as_usize() <= u32::MAX as usize);
+        let mut nr = nroots >> 3;
+
+        loop {
+            let rts = Address::from_mut_ptr(s).shift::<Address>(2);
+            let mut i = 0;
+
+            while i < nr {
+                let real_addr = get_stack_addr(rts.shift::<Address>(i as isize), offset, lb, ub);
+
+                let slot = read_stack(rts.shift::<Address>(i as isize), offset, lb, ub);
+                use crate::julia_finalizer::gc_ptr_tag;
+                // malloced pointer tagged in jl_gc_add_quiescent
+                // skip both the next element (native function), and the object
+                if slot & 3usize == 3 {
+                    i += 2;
+                    continue;
+                }
+
+                // pointer is not malloced but function is native, so skip it
+                if gc_ptr_tag(slot, 1) {
+                    i += 2;
+                    continue;
+                }
+
+                process_slot(closure, real_addr);
+                i += 1;
+            }
+
+            let s_prev_address = ::std::ptr::addr_of!((*s).prev);
+            let sprev = read_stack(Address::from_ptr(s_prev_address), offset, lb, ub);
+            if sprev.is_zero() {
+                break;
+            }
+
+            s = sprev.to_mut_ptr::<jl_gcframe_t>();
+            let s_nroots_addr = ::std::ptr::addr_of!((*s).nroots);
+            let new_nroots = read_stack(Address::from_ptr(s_nroots_addr), offset, lb, ub);
+            nroots = new_nroots;
+            nr = nroots >> 3;
+            continue;
+        }
+    }
+}
+
+pub unsafe fn mmtk_scan_gcstack<'a, EV: SlotVisitor<JuliaVMSlot>>(
+    ta: *const jl_task_t,
+    mut closure: &'a mut EV,
+    mut pclosure: Option<&'a mut EV>,
+) {
+    // process Julia's standard shadow (GC) stack
     let stkbuf = (*ta).ctx.stkbuf;
     let copy_stack = (*ta).ctx.copy_stack_custom();
 
@@ -407,16 +504,28 @@ pub unsafe fn mmtk_scan_gcstack<EV: SlotVisitor<JuliaVMSlot>>(
         let s_nroots_addr = ::std::ptr::addr_of!((*s).nroots);
         let mut nroots = read_stack(Address::from_ptr(s_nroots_addr), offset, lb, ub);
         debug_assert!(nroots.as_usize() as u32 <= u32::MAX);
-        let mut nr = nroots >> 2;
+        let mut nr = nroots >> 3;
 
         loop {
+            // if the 'pin' bit on the root type is not set, must transitively pin
+            // and therefore use transitive pinning closure
+            let closure_to_use: &mut &mut EV = if (nroots.as_usize() & 4) == 0 {
+                &mut closure
+            } else {
+                // otherwise, use the pinning closure (if available)
+                match &mut pclosure {
+                    Some(c) => c,
+                    None => &mut closure,
+                }
+            };
+
             let rts = Address::from_mut_ptr(s).shift::<Address>(2);
             let mut i = 0;
             while i < nr {
                 if (nroots.as_usize() & 1) != 0 {
                     let slot = read_stack(rts.shift::<Address>(i as isize), offset, lb, ub);
                     let real_addr = get_stack_addr(slot, offset, lb, ub);
-                    process_slot(closure, real_addr);
+                    process_slot(*closure_to_use, real_addr);
                 } else {
                     let real_addr =
                         get_stack_addr(rts.shift::<Address>(i as isize), offset, lb, ub);
@@ -432,12 +541,12 @@ pub unsafe fn mmtk_scan_gcstack<EV: SlotVisitor<JuliaVMSlot>>(
 
                     // pointer is not malloced but function is native, so skip it
                     if gc_ptr_tag(slot, 1) {
-                        process_offset_slot(closure, real_addr, 1);
+                        process_offset_slot(*closure_to_use, real_addr, 1);
                         i += 2;
                         continue;
                     }
 
-                    process_slot(closure, real_addr);
+                    process_slot(*closure_to_use, real_addr);
                 }
 
                 i += 1;
@@ -453,7 +562,7 @@ pub unsafe fn mmtk_scan_gcstack<EV: SlotVisitor<JuliaVMSlot>>(
             let s_nroots_addr = ::std::ptr::addr_of!((*s).nroots);
             let new_nroots = read_stack(Address::from_ptr(s_nroots_addr), offset, lb, ub);
             nroots = new_nroots;
-            nr = nroots >> 2;
+            nr = nroots >> 3;
             continue;
         }
     }
@@ -465,6 +574,46 @@ pub unsafe fn mmtk_scan_gcstack<EV: SlotVisitor<JuliaVMSlot>>(
             Address::from_mut_ptr(closure),
             process_slot::<EV> as _,
         );
+    }
+}
+
+#[inline(always)]
+pub unsafe fn get_julia_object_type(obj: Address) -> String {
+    // get Julia object type
+    let vt = mmtk_jl_typeof(obj);
+
+    // We don't scan buffers, as they will be scanned as a part of its parent object.
+    // But when a jl_binding_t buffer is inserted into remset, they have be to scanned.
+    // The gc bits (tag), which is set in the write barrier, tells us if the buffer is in the remset.
+    if vt as usize == JULIA_BUFF_TAG {
+        return "buff".to_string();
+    }
+
+    if vt == jl_symbol_type {
+        return "symbol".to_string();
+    }
+
+    if vt == jl_simplevector_type {
+        return "simplevector".to_string();
+    } else if (*vt).name == jl_array_typename {
+        return "array".to_string();
+    } else if vt == jl_module_type {
+        return "module".to_string();
+    } else if vt == jl_task_type {
+        return "task".to_string();
+    } else if vt == jl_string_type {
+        return "string".to_string();
+    } else {
+        if vt == jl_weakref_type {
+            return "weakref".to_string();
+        }
+        // Get detailed type name
+        let cstr = jl_symbol_name((*(*vt).name).name);
+        // jl_symbol_name(jl_sym_t*)
+        return std::ffi::CStr::from_ptr(cstr)
+            .to_string_lossy()
+            .into_owned();
+        // return "datatype".to_string();
     }
 }
 

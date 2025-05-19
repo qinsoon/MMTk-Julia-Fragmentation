@@ -2,7 +2,7 @@ use crate::api::mmtk_get_obj_size;
 use crate::jl_gc_genericmemory_how;
 use crate::jl_gc_update_inlined_array;
 use crate::julia_scanning::{
-    jl_genericmemory_typename, jl_small_typeof, mmtk_jl_typeof, mmtk_jl_typetagof,
+    jl_genericmemory_typename, jl_method_type, jl_small_typeof, mmtk_jl_typeof, mmtk_jl_typetagof,
 };
 use crate::julia_types::*;
 use crate::{JuliaVM, JULIA_BUFF_TAG, JULIA_HEADER_SIZE};
@@ -21,15 +21,11 @@ pub(crate) const LOGGING_SIDE_METADATA_SPEC: VMGlobalLogBitSpec = VMGlobalLogBit
 pub(crate) const MARKING_METADATA_SPEC: VMLocalMarkBitSpec =
     VMLocalMarkBitSpec::side_after(LOS_METADATA_SPEC.as_spec());
 
-#[cfg(feature = "object_pinning")]
 pub(crate) const LOCAL_PINNING_METADATA_BITS_SPEC: VMLocalPinningBitSpec =
     VMLocalPinningBitSpec::side_after(MARKING_METADATA_SPEC.as_spec());
 
-// pub(crate) const LOCAL_FORWARDING_POINTER_METADATA_SPEC: VMLocalForwardingPointerSpec =
-//     VMLocalForwardingPointerSpec::side_after(MARKING_METADATA_SPEC.as_spec());
-
-// pub(crate) const LOCAL_FORWARDING_METADATA_BITS_SPEC: VMLocalForwardingBitsSpec =
-//     VMLocalForwardingBitsSpec::side_after(LOCAL_FORWARDING_POINTER_METADATA_SPEC.as_spec());
+pub(crate) const LOCAL_FORWARDING_METADATA_BITS_SPEC: VMLocalForwardingBitsSpec =
+    VMLocalForwardingBitsSpec::side_after(LOCAL_PINNING_METADATA_BITS_SPEC.as_spec());
 
 /// PolicySpecific mark-and-nursery bits metadata spec
 /// 2-bits per object
@@ -41,20 +37,14 @@ impl ObjectModel<JuliaVM> for VMObjectModel {
     const LOCAL_FORWARDING_POINTER_SPEC: VMLocalForwardingPointerSpec =
         VMLocalForwardingPointerSpec::in_header(-64);
 
-    #[cfg(feature = "object_pinning")]
+    const LOCAL_PINNING_BIT_SPEC: VMLocalPinningBitSpec = LOCAL_PINNING_METADATA_BITS_SPEC;
     const LOCAL_FORWARDING_BITS_SPEC: VMLocalForwardingBitsSpec =
-        VMLocalForwardingBitsSpec::side_after(LOCAL_PINNING_METADATA_BITS_SPEC.as_spec());
-    #[cfg(not(feature = "object_pinning"))]
-    const LOCAL_FORWARDING_BITS_SPEC: VMLocalForwardingBitsSpec =
-        VMLocalForwardingBitsSpec::side_after(MARKING_METADATA_SPEC.as_spec());
+        LOCAL_FORWARDING_METADATA_BITS_SPEC;
 
     const LOCAL_MARK_BIT_SPEC: VMLocalMarkBitSpec = MARKING_METADATA_SPEC;
     const LOCAL_LOS_MARK_NURSERY_SPEC: VMLocalLOSMarkNurserySpec = LOS_METADATA_SPEC;
     const UNIFIED_OBJECT_REFERENCE_ADDRESS: bool = false;
     const OBJECT_REF_OFFSET_LOWER_BOUND: isize = 0;
-
-    #[cfg(feature = "object_pinning")]
-    const LOCAL_PINNING_BIT_SPEC: VMLocalPinningBitSpec = LOCAL_PINNING_METADATA_BITS_SPEC;
 
     fn copy(
         from: ObjectReference,
@@ -123,10 +113,20 @@ impl ObjectModel<JuliaVM> for VMObjectModel {
     }
 
     fn get_current_size(object: ObjectReference) -> usize {
-        // not being called by objects in LOS
-        debug_assert!(!is_object_in_los(&object));
-
-        unsafe { get_so_object_size(object) }
+        if is_object_in_los(&object) {
+            unsafe { get_lo_object_size(object) }
+        } else if is_object_in_immixspace(&object) || is_object_in_nonmoving(&object) {
+            unsafe { get_so_object_size(object) }
+        } else {
+            // This is hacky but it should work.
+            // This covers the cases for immortal space and VM space.
+            // For those spaces, we only query object size when we try to find the base reference for an internal pointer.
+            // For those two spaces, we bulk set VO bits so we cannot find the base reference at all.
+            // We return 0 as the object size, so MMTk core won't find the base reference.
+            // As we only use the base reference to pin the objects, we cannot pin the objects. But it is fine,
+            // as objects in those spaces won't be moved.
+            0
+        }
     }
 
     fn get_size_when_copied(_object: ObjectReference) -> usize {
@@ -176,7 +176,26 @@ pub fn is_object_in_los(object: &ObjectReference) -> bool {
 }
 
 #[inline(always)]
+pub fn is_object_in_immixspace(object: &ObjectReference) -> bool {
+    is_addr_in_immixspace((*object).to_raw_address())
+}
+
+#[inline(always)]
+pub fn is_addr_in_immixspace(addr: Address) -> bool {
+    // FIXME: get the range from MMTk. Or at least assert at boot time to make sure those constants are correct.
+    addr.as_usize() >= 0x200_0000_0000 && addr.as_usize() < 0x400_0000_0000
+}
+
+#[inline(always)]
+pub fn is_object_in_nonmoving(object: &ObjectReference) -> bool {
+    // FIXME: get the range from MMTk. Or at least assert at boot time to make sure those constants are correct.
+    (*object).to_raw_address().as_usize() >= 0x800_0000_0000
+        && (*object).to_raw_address().as_usize() < 0xa00_0000_0000
+}
+
 /// This function uses mutable static variables and requires unsafe annotation
+
+#[inline(always)]
 pub unsafe fn get_so_object_size(object: ObjectReference) -> usize {
     let obj_address = object.to_raw_address();
     let mut vtag = mmtk_jl_typetagof(obj_address);
@@ -290,6 +309,15 @@ pub unsafe fn get_so_object_size(object: ObjectReference) -> usize {
         debug_assert!(res <= 2032, "size {} greater than minimum!", res);
 
         return res;
+    } else if vt == jl_method_type {
+        let dtsz = std::mem::size_of::<jl_method_t>();
+        debug_assert!(
+            dtsz + JULIA_HEADER_SIZE <= 2032,
+            "size {} greater than minimum!",
+            dtsz + JULIA_HEADER_SIZE
+        );
+
+        return llt_align(dtsz + JULIA_HEADER_SIZE, 16);
     }
 
     let layout = (*vt).layout;
@@ -301,6 +329,13 @@ pub unsafe fn get_so_object_size(object: ObjectReference) -> usize {
     );
 
     llt_align(dtsz + JULIA_HEADER_SIZE, 16)
+}
+
+#[inline(always)]
+pub unsafe fn get_lo_object_size(object: ObjectReference) -> usize {
+    let obj_address = object.to_raw_address();
+    let julia_big_object = (obj_address - std::mem::size_of::<_bigval_t>()).to_ptr::<_bigval_t>();
+    return (*julia_big_object).sz;
 }
 
 #[inline(always)]

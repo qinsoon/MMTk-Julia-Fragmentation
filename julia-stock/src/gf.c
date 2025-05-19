@@ -585,8 +585,8 @@ JL_DLLEXPORT int jl_mi_cache_has_ci(jl_method_instance_t *mi,
     return 0;
 }
 
-// look for something with an egal ABI and properties that is already in the JIT for a whole edge (target_world=0) or can be added to the JIT with new source just for target_world.
-JL_DLLEXPORT jl_code_instance_t *jl_get_ci_equiv(jl_code_instance_t *ci JL_PROPAGATES_ROOT, size_t target_world) JL_NOTSAFEPOINT
+// look for something with an egal ABI and properties that is already in the JIT (compiled=true) or simply in the cache (compiled=false)
+JL_DLLEXPORT jl_code_instance_t *jl_get_ci_equiv(jl_code_instance_t *ci JL_PROPAGATES_ROOT, int compiled) JL_NOTSAFEPOINT
 {
     jl_value_t *def = ci->def;
     jl_method_instance_t *mi = jl_get_ci_mi(ci);
@@ -598,9 +598,9 @@ JL_DLLEXPORT jl_code_instance_t *jl_get_ci_equiv(jl_code_instance_t *ci JL_PROPA
     while (codeinst) {
         if (codeinst != ci &&
             jl_atomic_load_relaxed(&codeinst->inferred) != NULL &&
-            (target_world ? 1 : jl_atomic_load_relaxed(&codeinst->invoke) != NULL) &&
-            jl_atomic_load_relaxed(&codeinst->min_world) <= (target_world ? target_world : min_world) &&
-            jl_atomic_load_relaxed(&codeinst->max_world) >= (target_world ? target_world : max_world) &&
+            (!compiled || jl_atomic_load_relaxed(&codeinst->invoke) != NULL) &&
+            jl_atomic_load_relaxed(&codeinst->min_world) <= min_world &&
+            jl_atomic_load_relaxed(&codeinst->max_world) >= max_world &&
             jl_egal(codeinst->def, def) &&
             jl_egal(codeinst->owner, owner) &&
             jl_egal(codeinst->rettype, rettype)) {
@@ -608,7 +608,7 @@ JL_DLLEXPORT jl_code_instance_t *jl_get_ci_equiv(jl_code_instance_t *ci JL_PROPA
         }
         codeinst = jl_atomic_load_relaxed(&codeinst->next);
     }
-    return ci;
+    return (jl_code_instance_t*)jl_nothing;
 }
 
 
@@ -623,7 +623,7 @@ JL_DLLEXPORT jl_code_instance_t *jl_new_codeinst(
     assert(min_world <= max_world && "attempting to set invalid world constraints");
     //assert((!jl_is_method(mi->def.value) || max_world != ~(size_t)0 || min_world <= 1 || edges == NULL || jl_svec_len(edges) != 0) && "missing edges");
     jl_task_t *ct = jl_current_task;
-    jl_code_instance_t *codeinst = (jl_code_instance_t*)jl_gc_alloc(ct->ptls, sizeof(jl_code_instance_t),
+    jl_code_instance_t *codeinst = (jl_code_instance_t*)jl_gc_alloc_nonmoving(ct->ptls, sizeof(jl_code_instance_t),
             jl_code_instance_type);
     codeinst->def = (jl_value_t*)mi;
     codeinst->owner = owner;
@@ -2795,9 +2795,10 @@ void jl_read_codeinst_invoke(jl_code_instance_t *ci, uint8_t *specsigflags, jl_c
 
 jl_method_instance_t *jl_normalize_to_compilable_mi(jl_method_instance_t *mi JL_PROPAGATES_ROOT);
 
-JL_DLLEXPORT void jl_add_codeinst_to_cache(jl_code_instance_t *codeinst, jl_code_info_t *src)
+JL_DLLEXPORT void jl_add_codeinst_to_jit(jl_code_instance_t *codeinst, jl_code_info_t *src)
 {
     assert(jl_is_code_info(src));
+    jl_emit_codeinst_to_jit(codeinst, src);
     jl_method_instance_t *mi = jl_get_ci_mi(codeinst);
     if (jl_generating_output() && jl_is_method(mi->def.method) && jl_atomic_load_relaxed(&codeinst->inferred) == jl_nothing) {
         jl_value_t *compressed = jl_compress_ir(mi->def.method, src);
@@ -2811,14 +2812,6 @@ JL_DLLEXPORT void jl_add_codeinst_to_cache(jl_code_instance_t *codeinst, jl_code
         jl_atomic_store_release(&codeinst->inferred, compressed);
         jl_gc_wb(codeinst, compressed);
     }
-}
-
-
-JL_DLLEXPORT void jl_add_codeinst_to_jit(jl_code_instance_t *codeinst, jl_code_info_t *src)
-{
-    assert(jl_is_code_info(src));
-    jl_emit_codeinst_to_jit(codeinst, src);
-    jl_add_codeinst_to_cache(codeinst, src);
 }
 
 jl_code_instance_t *jl_compile_method_internal(jl_method_instance_t *mi, size_t world)

@@ -38,7 +38,7 @@ JL_DLLEXPORT jl_genericmemory_t *jl_alloc_genericmemory_unchecked(jl_ptls_t ptls
         data = (char*)jl_gc_managed_malloc(nbytes);
         tot = sizeof(jl_genericmemory_t) + sizeof(void*);
     }
-    m = (jl_genericmemory_t*)jl_gc_alloc(ptls, tot, mtype);
+    m = (jl_genericmemory_t*)jl_gc_alloc_nonmoving(ptls, tot, mtype);
     if (pooled) {
         data = (char*)m + JL_SMALL_BYTE_ALIGNMENT;
     }
@@ -107,10 +107,11 @@ JL_DLLEXPORT jl_genericmemory_t *jl_string_to_genericmemory(jl_value_t *str)
         return (jl_genericmemory_t*)((jl_datatype_t*)jl_memory_uint8_type)->instance;
     jl_task_t *ct = jl_current_task;
     int tsz = sizeof(jl_genericmemory_t) + sizeof(void*);
-    jl_genericmemory_t *m = (jl_genericmemory_t*)jl_gc_alloc(ct->ptls, tsz, jl_memory_uint8_type);
+    jl_genericmemory_t *m = (jl_genericmemory_t*)jl_gc_alloc_nonmoving(ct->ptls, tsz, jl_memory_uint8_type);
     m->length = jl_string_len(str);
     m->ptr = jl_string_data(str);
     jl_genericmemory_data_owner_field(m) = str;
+    OBJ_PIN(str);
     return m;
 }
 
@@ -166,6 +167,7 @@ JL_DLLEXPORT jl_genericmemory_t *jl_ptr_to_genericmemory(jl_value_t *mtype, void
     m->length = nel;
     jl_genericmemory_data_owner_field(m) = own_buffer ? (jl_value_t*)m : NULL;
     if (own_buffer) {
+        OBJ_PIN(m);
         int isaligned = 0;  // TODO: allow passing memalign'd buffers
         jl_gc_track_malloced_genericmemory(ct->ptls, m, isaligned);
         size_t allocated_bytes = memory_block_usable_size(data, isaligned);

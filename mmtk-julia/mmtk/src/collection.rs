@@ -4,7 +4,7 @@ use crate::{
     jl_hrtime, jl_throw_out_of_memory_error,
 };
 use crate::{JuliaVM, USER_TRIGGERED_GC};
-use log::{info, trace};
+use log::{debug, trace};
 use mmtk::util::alloc::AllocationError;
 use mmtk::util::heap::GCTriggerPolicy;
 use mmtk::util::opaque_pointer::*;
@@ -15,10 +15,13 @@ use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU64, Ordering};
 use crate::{BLOCK_FOR_GC, STW_COND, WORLD_HAS_STOPPED};
 
 pub static GC_START: AtomicU64 = AtomicU64::new(0);
+static CURRENT_GC_MAY_MOVE: AtomicBool = AtomicBool::new(true);
 
 use std::collections::HashSet;
 use std::sync::RwLock;
 use std::thread::ThreadId;
+
+use crate::api::print_fragmentation;
 
 lazy_static! {
     static ref GC_THREADS: RwLock<HashSet<ThreadId>> = RwLock::new(HashSet::new());
@@ -52,11 +55,18 @@ impl Collection<JuliaVM> for VMCollection {
 
         trace!("Stopped the world!");
 
+        // Store if the current GC may move objects -- we will use it when the current GC finishes.
+        // We cache the value here just in case MMTk may clear it before we use the value.
+        CURRENT_GC_MAY_MOVE.store(
+            crate::SINGLETON.get_plan().current_gc_may_move_object(),
+            Ordering::SeqCst,
+        );
+
         // Tell MMTk the stacks are ready.
         {
             use mmtk::vm::ActivePlan;
             for mutator in crate::active_plan::VMActivePlan::mutators() {
-                info!("stop_all_mutators: visiting {:?}", mutator.mutator_tls);
+                debug!("stop_all_mutators: visiting {:?}", mutator.mutator_tls);
                 mutator_visitor(mutator);
             }
         }
@@ -68,6 +78,9 @@ impl Collection<JuliaVM> for VMCollection {
     }
 
     fn resume_mutators(_tls: VMWorkerThread) {
+        // unpin conservative roots
+        crate::conservative::unpin_conservative_roots();
+
         // Get the end time of the GC
         let end = unsafe { jl_hrtime() };
         trace!("gc_end = {}", end);
@@ -80,13 +93,15 @@ impl Collection<JuliaVM> for VMCollection {
             )
         }
 
+        // dump_immix_block_stats();
+
         AtomicBool::store(&BLOCK_FOR_GC, false, Ordering::SeqCst);
         AtomicBool::store(&WORLD_HAS_STOPPED, false, Ordering::SeqCst);
 
         let (_, cvar) = &*STW_COND.clone();
         cvar.notify_all();
 
-        info!(
+        debug!(
             "Live bytes = {}, total bytes = {}",
             crate::api::mmtk_used_bytes(),
             crate::api::mmtk_total_bytes()
@@ -96,11 +111,11 @@ impl Collection<JuliaVM> for VMCollection {
     }
 
     fn block_for_gc(_tls: VMMutatorThread) {
-        info!("Triggered GC!");
+        debug!("Triggered GC!");
 
         unsafe { jl_gc_prepare_to_collect() };
 
-        info!("Finished blocking mutator for GC!");
+        debug!("Finished blocking mutator for GC!");
     }
 
     fn spawn_gc_thread(_tls: VMThread, ctx: GCThreadContext<JuliaVM>) {
@@ -158,6 +173,10 @@ pub fn is_current_gc_nursery() -> bool {
     }
 }
 
+pub fn is_current_gc_moving() -> bool {
+    CURRENT_GC_MAY_MOVE.load(Ordering::SeqCst)
+}
+
 #[no_mangle]
 pub extern "C" fn mmtk_block_thread_for_gc() {
     AtomicBool::store(&BLOCK_FOR_GC, true, Ordering::SeqCst);
@@ -165,7 +184,7 @@ pub extern "C" fn mmtk_block_thread_for_gc() {
     let (lock, cvar) = &*STW_COND.clone();
     let mut count = lock.lock().unwrap();
 
-    info!("Blocking for GC!");
+    debug!("Blocking for GC!");
 
     AtomicBool::store(&WORLD_HAS_STOPPED, true, Ordering::SeqCst);
 
@@ -174,4 +193,52 @@ pub extern "C" fn mmtk_block_thread_for_gc() {
     }
 
     AtomicIsize::store(&USER_TRIGGERED_GC, 0, Ordering::SeqCst);
+}
+
+pub fn dump_immix_block_stats() {
+    use mmtk::util::Address;
+    use mmtk::util::ObjectReference;
+    use std::fs::OpenOptions;
+    use std::io::Write;
+
+    let mut file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open("/home/eduardo/block-stats-script.log") // ← Replace with your desired file path
+        .expect("Unable to open log file");
+
+    SINGLETON.enumerate_objects(
+        |space_name: &str, block_start: Address, block_size: usize, object: ObjectReference| {
+            if space_name == "immix" {
+                writeln!(
+                    file,
+                    "Block: {}, object: {} ({}), size: {}, pinned: {}",
+                    block_start,
+                    object,
+                    unsafe {
+                        crate::julia_scanning::get_julia_object_type(object.to_raw_address())
+                    },
+                    unsafe { crate::object_model::get_so_object_size(object) },
+                    mmtk::memory_manager::is_pinned(object),
+                )
+                .expect("Unable to write to log file");
+            } else if space_name == "nonmoving" {
+                writeln!(
+                    file,
+                    "Nonmoving: {}, object: {} ({}), size: {}, reachable: {}",
+                    block_start,
+                    object,
+                    unsafe {
+                        crate::julia_scanning::get_julia_object_type(object.to_raw_address())
+                    },
+                    unsafe { crate::object_model::get_so_object_size(object) },
+                    object.is_reachable(),
+                )
+                .expect("Unable to write to log file");
+            }
+        },
+    );
+
+    print_fragmentation();
 }

@@ -147,26 +147,21 @@ function show(io::IO, rng::MersenneTwister)
     end
     print(io, MersenneTwister, "(", repr(rng.seed), ", (")
     # state
-    sep = ", "
-    show(io, rng.adv_jump)
-    print(io, sep)
-    show(io, rng.adv)
+    adv = Integer[rng.adv_jump, rng.adv]
     if rng.adv_vals != -1 || rng.adv_ints != -1
-        # "(0, 0)" is nicer on the eyes than (-1, 1002)
-        s = rng.adv_vals != -1
-        print(io, sep)
-        show(io, s ? rng.adv_vals : zero(rng.adv_vals))
-        print(io, sep)
-        show(io, s ? rng.idxF : zero(rng.idxF))
+        if rng.adv_vals == -1
+            @assert rng.idxF == MT_CACHE_F
+            push!(adv, 0, 0) # "(0, 0)" is nicer on the eyes than (-1, 1002)
+        else
+            push!(adv, rng.adv_vals, rng.idxF)
+        end
     end
     if rng.adv_ints != -1
         idxI = (length(rng.ints)*16 - rng.idxI) / 8 # 8 represents one Int64
         idxI = Int(idxI) # idxI should always be an integer when using public APIs
-        print(io, sep)
-        show(io, rng.adv_ints)
-        print(io, sep)
-        show(io, idxI)
+        push!(adv, rng.adv_ints, idxI)
     end
+    join(io, adv, ", ")
     print(io, "))")
 end
 

@@ -214,8 +214,8 @@ struct jl_codegen_call_target_t {
 
 // reification of a call to jl_jit_abi_convert, so that it isn't necessary to parse the Modules to recover this info
 struct cfunc_decl_t {
-    jl_value_t *declrt;
-    jl_value_t *sigt;
+    jl_pinned_ref(jl_value_t) declrt;
+    jl_pinned_ref(jl_value_t) sigt;
     size_t nargs;
     bool specsig;
     llvm::GlobalVariable *theFptr;
@@ -238,7 +238,8 @@ struct jl_codegen_params_t {
     // outputs
     jl_workqueue_t workqueue;
     SmallVector<cfunc_decl_t,0> cfuncs;
-    std::map<void*, GlobalVariable*> global_targets;
+    // This map may hold Julia obj ref in the native heap. We need to pin the void*.
+    std::map<jl_pinned_ref(void), GlobalVariable*> global_targets;
     jl_array_t *temporary_roots = nullptr;
     std::map<std::tuple<jl_code_instance_t*,bool>, GlobalVariable*> external_fns;
     std::map<jl_datatype_t*, DIType*> ditypes;
@@ -336,6 +337,7 @@ Constant *literal_pointer_val_slot(jl_codegen_params_t &params, Module *M, jl_va
 
 static inline Constant *literal_static_pointer_val(const void *p, Type *T) JL_NOTSAFEPOINT
 {
+    PTR_PIN((void*)p); // This may point to non-mmtk heap memory.
     // this function will emit a static pointer into the generated code
     // the generated code will only be valid during the current session,
     // and thus, this should typically be avoided in new API's

@@ -52,7 +52,18 @@ extern void JL_GC_ENABLEFRAME(interpreter_state*) JL_NOTSAFEPOINT;
 
 #else
 
+#ifdef WITH_THIRD_PARTY_HEAP
+#if WITH_THIRD_PARTY_HEAP == 1 // MMTk
+// #define JL_GC_ENCODE_PUSHFRAME(n)  ((((size_t)(n))<<3)|2)
+// For roots that are not transitively pinned
+#define JL_GC_ENCODE_PUSHFRAME_NO_TPIN(n)  ((((size_t)(n))<<3)|6)
+// do not transitively pin shadow stack objects
+#define JL_GC_ENCODE_PUSHFRAME(n)  JL_GC_ENCODE_PUSHFRAME_NO_TPIN(n)
+#endif // endif MMTk
+#else
 #define JL_GC_ENCODE_PUSHFRAME(n)  ((((size_t)(n))<<2)|2)
+#define JL_GC_ENCODE_PUSHFRAME_NO_TPIN(n)  JL_GC_ENCODE_PUSHFRAME(n)
+#endif
 
 #define JL_GC_PUSHFRAME(frame,locals,n)                                             \
   JL_CPPALLOCA(frame, sizeof(*frame)+(((n)+3)*sizeof(jl_value_t*)));                \
@@ -934,13 +945,14 @@ JL_DLLEXPORT size_t jl_capture_interp_frame(jl_bt_element_t *bt_entry,
     uintptr_t entry_tags = jl_bt_entry_descriptor(njlvalues, 0, JL_BT_INTERP_FRAME_TAG, s->ip);
     bt_entry[0].uintptr = JL_BT_NON_PTR_ENTRY;
     bt_entry[1].uintptr = entry_tags;
-    bt_entry[2].jlvalue = s->ci  ? (jl_value_t*)s->ci  :
+    jl_value_t* result = s->ci  ? (jl_value_t*)s->ci  :
                           s->mi  ? (jl_value_t*)s->mi  :
                           s->src ? (jl_value_t*)s->src : (jl_value_t*)jl_nothing;
+    jl_pinned_ref_set(bt_entry[2].jlvalue, result);
     if (need_module) {
         // If we only have a CodeInfo (s->src), we are in a top level thunk and
         // need to record the module separately.
-        bt_entry[3].jlvalue = (jl_value_t*)s->module;
+        jl_pinned_ref_set(bt_entry[3].jlvalue, (jl_value_t*)s->module);
     }
     return required_space;
 }

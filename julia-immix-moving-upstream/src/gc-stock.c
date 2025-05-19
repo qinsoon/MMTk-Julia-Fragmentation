@@ -826,6 +826,7 @@ int jl_gc_classify_pools(size_t sz, int *osize)
 
 gc_fragmentation_stat_t gc_page_fragmentation_stats[JL_GC_N_POOLS];
 JL_DLLEXPORT double jl_gc_page_utilization_stats[JL_GC_N_MAX_POOLS];
+JL_DLLEXPORT gc_fragmentation_stat_t jl_gc_page_fragmentation_stats_export[JL_GC_N_POOLS];
 
 STATIC_INLINE void gc_update_page_fragmentation_data(jl_gc_pagemeta_t *pg) JL_NOTSAFEPOINT
 {
@@ -845,6 +846,8 @@ STATIC_INLINE void gc_dump_page_utilization_data(void) JL_NOTSAFEPOINT
             utilization -= ((double)n_freed_objs * (double)jl_gc_sizeclasses[i]) / (double)n_pages_allocd / (double)GC_PAGE_SZ;
         }
         jl_gc_page_utilization_stats[i] = utilization;
+        jl_gc_page_fragmentation_stats_export[i].n_freed_objs = n_freed_objs;
+        jl_gc_page_fragmentation_stats_export[i].n_pages_allocd = n_pages_allocd;
         jl_atomic_store_relaxed(&stats->n_freed_objs, 0);
         jl_atomic_store_relaxed(&stats->n_pages_allocd, 0);
     }
@@ -954,6 +957,7 @@ static void gc_sweep_page(gc_page_profiler_serializer_t *s, jl_gc_pool_t *p, jl_
 
 done:
     if (re_use_page) {
+        gc_update_page_fragmentation_data(pg);
         push_lf_back(allocd, pg);
     }
     else {
@@ -962,7 +966,6 @@ done:
         push_lf_back(&global_page_pool_lazily_freed, pg);
     }
     gc_page_profile_write_to_file(s);
-    gc_update_page_fragmentation_data(pg);
     gc_time_count_page(freedall, pg_skpd);
     jl_ptls_t ptls = jl_current_task->ptls;
     // Note that we aggregate the `pool_live_bytes` over all threads before returning this

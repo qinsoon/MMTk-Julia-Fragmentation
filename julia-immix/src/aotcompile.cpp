@@ -72,7 +72,8 @@ typedef struct {
     SmallVector<GlobalValue*, 0> jl_sysimg_fvars;
     SmallVector<GlobalValue*, 0> jl_sysimg_gvars;
     std::map<jl_code_instance_t*, std::tuple<uint32_t, uint32_t>> jl_fvar_map;
-    SmallVector<void*, 0> jl_value_to_llvm;
+    // This holds references to the heap. Need to be pinned.
+    SmallVector<jl_pinned_ref(void), 0> jl_value_to_llvm;
     SmallVector<jl_code_instance_t*, 0> jl_external_to_llvm;
 } jl_native_code_desc_t;
 
@@ -355,7 +356,7 @@ static void aot_optimize_roots(jl_codegen_params_t &params, egal_set &method_roo
 {
     for (size_t i = 0; i < jl_array_dim0(params.temporary_roots); i++) {
         jl_value_t *val = jl_array_ptr_ref(params.temporary_roots, i);
-        auto ref = params.global_targets.find((void*)val);
+        auto ref = params.global_targets.find(jl_pinned_ref_assume(void, val));
         if (ref == params.global_targets.end())
             continue;
         auto get_global_root = [val, &method_roots]() {
@@ -370,7 +371,7 @@ static void aot_optimize_roots(jl_codegen_params_t &params, egal_set &method_roo
         if (mval != val) {
             GlobalVariable *GV = ref->second;
             params.global_targets.erase(ref);
-            auto mref = params.global_targets.find((void*)mval);
+            auto mref = params.global_targets.find(jl_pinned_ref_assume(void, mval));
             if (mref != params.global_targets.end()) {
                 // replace ref with mref in all Modules
                 std::string OldName(GV->getName());
@@ -394,7 +395,7 @@ static void aot_optimize_roots(jl_codegen_params_t &params, egal_set &method_roo
                 assert(GV == nullptr);
             }
             else {
-                params.global_targets[(void*)mval] = GV;
+                params.global_targets[jl_pinned_ref_create(void, mval)] = GV;
             }
         }
     }
@@ -546,9 +547,9 @@ static void generate_cfunc_thunks(jl_codegen_params_t &params, jl_compiled_funct
     size_t latestworld = jl_atomic_load_acquire(&jl_world_counter);
     for (cfunc_decl_t &cfunc : params.cfuncs) {
         Module *M = cfunc.theFptr->getParent();
-        jl_value_t *sigt = cfunc.sigt;
+        jl_value_t *sigt = jl_pinned_ref_get(cfunc.sigt);
         JL_GC_PROMISE_ROOTED(sigt);
-        jl_value_t *declrt = cfunc.declrt;
+        jl_value_t *declrt = jl_pinned_ref_get(cfunc.declrt);
         JL_GC_PROMISE_ROOTED(declrt);
         Function *unspec = aot_abi_converter(params, M, declrt, sigt, cfunc.nargs, cfunc.specsig, nullptr, nullptr, "", "", false);
         jl_code_instance_t *codeinst = nullptr;
@@ -674,20 +675,6 @@ void *jl_create_native_impl(jl_array_t *methods, LLVMOrcThreadSafeModuleRef llvm
     }
     fargs[0] = (jl_value_t*)codeinfos;
     void *data = jl_emit_native(codeinfos, llvmmod, &cgparams, external_linkage);
-
-    // examine everything just emitted and save it to the caches
-    if (!external_linkage) {
-        for (size_t i = 0, l = jl_array_nrows(codeinfos); i < l; i++) {
-            jl_value_t *item = jl_array_ptr_ref(codeinfos, i);
-            if (jl_is_code_instance(item)) {
-                // now add it to our compilation results
-                jl_code_instance_t *codeinst = (jl_code_instance_t*)item;
-                jl_code_info_t *src = (jl_code_info_t*)jl_array_ptr_ref(codeinfos, ++i);
-                assert(jl_is_code_info(src));
-                jl_add_codeinst_to_cache(codeinst, src);
-            }
-        }
-    }
 
     // move everything inside, now that we've merged everything
     // (before adding the exported headers)
@@ -826,7 +813,7 @@ void *jl_emit_native_impl(jl_array_t *codeinfos, LLVMOrcThreadSafeModuleRef llvm
         global.second->setInitializer(literal_static_pointer_val(global.first, global.second->getValueType()));
         assert(gvars_set.insert(global.second).second && "Duplicate gvar in params!");
         assert(gvars_names.insert(gvars[idx]).second && "Duplicate gvar name in params!");
-        data->jl_value_to_llvm[idx] = global.first;
+        data->jl_value_to_llvm[idx] = jl_pinned_ref_assume(void, global.first);
         idx++;
     }
     CreateNativeMethods += compiled_functions.size();
@@ -2381,7 +2368,7 @@ void jl_get_llvmf_defn_impl(jl_llvmf_dump_t *dump, jl_method_instance_t *mi, jl_
             jl_compiled_functions_t compiled_functions;
             size_t latestworld = jl_atomic_load_acquire(&jl_world_counter);
             for (cfunc_decl_t &cfunc : output.cfuncs) {
-                jl_value_t *sigt = cfunc.sigt;
+                jl_value_t *sigt = jl_pinned_ref_get(cfunc.sigt);
                 JL_GC_PROMISE_ROOTED(sigt);
                 jl_method_instance_t *mi = jl_get_specialization1((jl_tupletype_t*)sigt, latestworld, 0);
                 if (mi == nullptr)

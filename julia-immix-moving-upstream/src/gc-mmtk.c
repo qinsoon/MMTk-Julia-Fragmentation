@@ -512,19 +512,6 @@ static void add_node_to_roots_buffer(RootsWorkClosure* closure, RootsWorkBuffer*
     }
 }
 
-static void add_node_to_tpinned_roots_buffer(RootsWorkClosure* closure, RootsWorkBuffer* buf, size_t* buf_len, void* root) {
-    if (root == NULL)
-        return;
-
-    buf->ptr[*buf_len] = root;
-    *buf_len += 1;
-    if (*buf_len >= buf->cap) {
-        RootsWorkBuffer new_buf = (closure->report_tpinned_nodes_func)(buf->ptr, *buf_len, buf->cap, closure->data, true);
-        *buf = new_buf;
-        *buf_len = 0;
-    }
-}
-
 // staticdata_utils.c
 extern jl_array_t *internal_methods;
 extern jl_array_t *newly_inferred;
@@ -826,15 +813,8 @@ JL_DLLEXPORT void jl_gc_scan_vm_specific_roots(RootsWorkClosure* closure)
     // add_node_to_roots_buffer(closure, &buf, &len, cmpswap_names);
     // add_node_to_roots_buffer(closure, &buf, &len, precompile_field_replace);
 
-    // jl_global_roots_table must be transitively pinned
-    // FIXME: We need to remove transitive pinning of global roots. Otherwise they may pin most of the objects in the heap.
-    RootsWorkBuffer tpinned_buf = (closure->report_tpinned_nodes_func)((void**)0, 0, 0, closure->data, true);
-    size_t tpinned_len = 0;
-    add_node_to_tpinned_roots_buffer(closure, &tpinned_buf, &tpinned_len, jl_global_roots_list);
-    add_node_to_tpinned_roots_buffer(closure, &tpinned_buf, &tpinned_len, jl_global_roots_keyset);
     // Push the result of the work.
     (closure->report_nodes_func)(buf.ptr, len, buf.cap, closure->data, false);
-    (closure->report_tpinned_nodes_func)(tpinned_buf.ptr, tpinned_len, tpinned_buf.cap, closure->data, false);
 }
 
 JL_DLLEXPORT void jl_gc_scan_julia_exc_obj(void* obj_raw, void* closure, ProcessSlotFn process_slot) {
@@ -1086,7 +1066,7 @@ JL_DLLEXPORT size_t jl_gc_genericmemory_how(void *arg) JL_NOTSAFEPOINT
 
 JL_DLLEXPORT jl_weakref_t *jl_gc_new_weakref_th(jl_ptls_t ptls, jl_value_t *value)
 {
-    jl_weakref_t *wr = (jl_weakref_t*)jl_gc_alloc(ptls, sizeof(void*), jl_weakref_type);
+    jl_weakref_t *wr = (jl_weakref_t*)jl_gc_alloc_nonmoving(ptls, sizeof(void*), jl_weakref_type);
     wr->value = value;  // NOTE: wb not needed here
     // Note: we are using MMTk's weak ref processing. If we switch to Julia's weak ref processing,
     // we need to make sure the value and the weak ref won't be moved (e.g. pin them)
@@ -1116,6 +1096,7 @@ JL_DLLEXPORT int* jl_gc_get_have_pending_finalizers(void) {
 // ========================================================================= //
 
 #define MMTK_DEFAULT_IMMIX_ALLOCATOR (0)
+#define MMTK_NONMOVING_ALLOCATOR (1)
 #define MMTK_IMMORTAL_BUMP_ALLOCATOR (0)
 
 int jl_gc_classify_pools(size_t sz, int *osize)
@@ -1170,6 +1151,17 @@ STATIC_INLINE void mmtk_immix_post_alloc_fast(MMTkMutatorContext* mutator, void*
     }
 }
 
+STATIC_INLINE void* mmtk_nonmoving_alloc_fast(MMTkMutatorContext* mutator, size_t size, size_t align, size_t offset) {
+    ImmixAllocator* allocator = &mutator->allocators.immix[MMTK_NONMOVING_ALLOCATOR];
+    return bump_alloc_fast(mutator, (uintptr_t*)&allocator->cursor, (intptr_t)allocator->limit, size, align, offset, 6);
+}
+
+STATIC_INLINE void mmtk_nonmoving_post_alloc_fast(MMTkMutatorContext* mutator, void* obj, size_t size) {
+    if (MMTK_NEEDS_VO_BIT) {
+        mmtk_set_side_metadata(MMTK_SIDE_VO_BIT_BASE_ADDRESS, obj);
+    }
+}
+
 STATIC_INLINE void* mmtk_immortal_alloc_fast(MMTkMutatorContext* mutator, size_t size, size_t align, size_t offset) {
     BumpAllocator* allocator = &mutator->allocators.bump_pointer[MMTK_IMMORTAL_BUMP_ALLOCATOR];
     return bump_alloc_fast(mutator, (uintptr_t*)&allocator->cursor, (uintptr_t)allocator->limit, size, align, offset, 1);
@@ -1199,6 +1191,32 @@ JL_DLLEXPORT jl_value_t *jl_mmtk_gc_alloc_default(jl_ptls_t ptls, int osize, siz
         v = jl_valueof(v_tagged_aligned);
         mmtk_store_obj_size_c(v, LLT_ALIGN(osize+sizeof(jl_taggedvalue_t), align));
         mmtk_immix_post_alloc_fast(&ptls->gc_tls.mmtk_mutator, v, LLT_ALIGN(osize+sizeof(jl_taggedvalue_t), align));
+    }
+
+    ptls->gc_tls_common.gc_num.allocd += osize;
+    ptls->gc_tls_common.gc_num.poolalloc++;
+
+    return v;
+}
+
+JL_DLLEXPORT jl_value_t *jl_mmtk_gc_alloc_nonmoving(jl_ptls_t ptls, int osize, size_t align, void *ty)
+{
+    // safepoint
+    jl_gc_safepoint_(ptls);
+
+    jl_value_t *v;
+    if ((uintptr_t)ty != jl_buff_tag) {
+        // v needs to be 16 byte aligned, therefore v_tagged needs to be offset accordingly to consider the size of header
+        jl_taggedvalue_t *v_tagged = (jl_taggedvalue_t *)mmtk_nonmoving_alloc_fast(&ptls->gc_tls.mmtk_mutator, LLT_ALIGN(osize, align), align, sizeof(jl_taggedvalue_t));
+        v = jl_valueof(v_tagged);
+        mmtk_nonmoving_post_alloc_fast(&ptls->gc_tls.mmtk_mutator, v, LLT_ALIGN(osize, align));
+    } else {
+        // allocating an extra word to store the size of buffer objects
+        jl_taggedvalue_t *v_tagged = (jl_taggedvalue_t *)mmtk_nonmoving_alloc_fast(&ptls->gc_tls.mmtk_mutator, LLT_ALIGN(osize+sizeof(jl_taggedvalue_t), align), align, 0);
+        jl_value_t* v_tagged_aligned = ((jl_value_t*)((char*)(v_tagged) + sizeof(jl_taggedvalue_t)));
+        v = jl_valueof(v_tagged_aligned);
+        mmtk_store_obj_size_c(v, LLT_ALIGN(osize+sizeof(jl_taggedvalue_t), align));
+        mmtk_nonmoving_post_alloc_fast(&ptls->gc_tls.mmtk_mutator, v, LLT_ALIGN(osize+sizeof(jl_taggedvalue_t), align));
     }
 
     ptls->gc_tls_common.gc_num.allocd += osize;
@@ -1279,10 +1297,18 @@ inline jl_value_t *jl_gc_alloc_(jl_ptls_t ptls, size_t sz, void *ty)
 
 inline jl_value_t *jl_gc_alloc_nonmoving_(jl_ptls_t ptls, size_t sz, void *ty)
 {
-    // TODO: Currently we just alloc and pin the object. We may use a
-    // different non moving allocator instead.
-    jl_value_t *v = jl_gc_alloc_(ptls, sz, ty);
-    OBJ_PIN(v);
+    jl_value_t *v;
+    const size_t allocsz = sz + sizeof(jl_taggedvalue_t);
+    if (sz <= GC_MAX_SZCLASS) {
+        v = jl_mmtk_gc_alloc_nonmoving(ptls, allocsz, 16, ty);
+    }
+    else {
+        if (allocsz < sz) // overflow in adding offs, size was "negative"
+            jl_throw(jl_memory_exception);
+        v = jl_mmtk_gc_alloc_big(ptls, allocsz);
+    }
+    jl_set_typeof(v, ty);
+    maybe_record_alloc_to_profile(v, sz, (jl_datatype_t*)ty);
     return v;
 }
 
@@ -1550,7 +1576,7 @@ JL_DLLEXPORT jl_value_t *jl_gc_internal_obj_base_ptr(void *p)
 
 #define JL_GC_PUSHARGS_PRESERVE_ROOT_OBJS(rts_var,n)                                                    \
   rts_var = ((jl_value_t**)malloc(((n)+2)*sizeof(jl_value_t*)))+2;                                      \
-  ((void**)rts_var)[-2] = (void*)JL_GC_ENCODE_PUSHARGS(n);                                              \
+  ((void**)rts_var)[-2] = (void*)JL_GC_ENCODE_PUSHARGS_TPIN(n);                                         \
   ((void**)rts_var)[-1] = jl_p_gcpreserve_stack;                                                        \
   memset((void*)rts_var, 0, (n)*sizeof(jl_value_t*));                                                   \
   jl_p_gcpreserve_stack = (jl_gcframe_t*)&(((void**)rts_var)[-2]);                                      \

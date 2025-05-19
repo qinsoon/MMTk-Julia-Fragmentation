@@ -30,13 +30,17 @@ rm -fr logs
 mkdir -p logs
 LOGS_DIR=$(pwd)/logs
 
+print_green "Creating plots directory"
+rm -fr plots
+mkdir -p plots
+
 # Small function to encapsulate the commands to build Julia (i.e. make -C ../mmtk-julia clean && make cleanall && make -j
 function build_julia {
     print_green "Building $1"
     cd $MMTK_JULIA_FRAGMENTATION_ROOT/$1
     make -C ../mmtk-julia clean
     make cleanall
-    make -j
+    make
     cd - > /dev/null
     print_green "Successfully built $1"
 }
@@ -95,8 +99,8 @@ function run_with_retries {
 
 # Run the benchmarks for all GC implementations
 run_with_retries julia-stock
-# run_with_retries julia-immix
-# run_with_retries julia-sticky-immix
+RUST_BACKTRACE=1 run_with_retries julia-immix # non-stress moving
+RUST_BACKTRACE=1 run_with_retries julia-immix-nonmoving
 RUST_BACKTRACE=1 run_with_retries julia-immix-moving-upstream
 # Parse the logs
 parse_fragmentation_logs

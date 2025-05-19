@@ -77,6 +77,13 @@ typedef struct _jl_tls_states_t *jl_ptls_t;
 // the common fields are hidden before the pointer, but the following macro is
 // used to indicate which types below are subtypes of jl_value_t
 #define JL_DATA_TYPE
+// Objects of a type that is JL_NON_MOVING should be allocated with
+// jl_gc_alloc_non_moving so they will never be moved by GC.
+// Those types are usually frequently referenced by the runtime.
+// It is basically a trade-off between allocating the objects as non-moving
+// and pinning the objects after allocation. If objects of certain types are
+// mostly likely to be pinned, it is a good idea to just allocate them as non moving.
+#define JL_NON_MOVING
 typedef struct _jl_value_t jl_value_t;
 #include "julia_threads.h"
 
@@ -84,6 +91,59 @@ typedef struct _jl_value_t jl_value_t;
 extern "C" {
 #endif
 
+// object pinning  ------------------------------------------------------------
+
+// FIXME: Pinning objects that get hashed in the ptrhash table
+// until we implement address space hashing.
+#define OBJHASH_PIN(key) if (key) jl_gc_pin_object(key);
+#define PTRHASH_PIN(key) if (key) jl_gc_pin_pointer(key);
+
+// Called when pinning objects that would cause an error if moved
+// The difference: the argument for pin_object needs to pointer to an object (jl_value_t*),
+// but the argument for pin_pointer can be an internal pointer.
+#define OBJ_PIN(key) if (key) jl_gc_pin_object(key);
+#define PTR_PIN(key) if (key) jl_gc_pin_pointer(key);
+
+#ifdef __cplusplus
+} // extern "C"
+#endif
+
+#ifdef __cplusplus
+
+// C++ template version
+template<typename T>
+class pinned_ref {
+    T* ptr;
+public:
+    explicit pinned_ref() : ptr(static_cast<T*>(assume(NULL))) {}
+    explicit pinned_ref(void* p) : ptr(static_cast<T*>(p)) {}
+    operator void*() const { return ptr; }
+    T* get() const { return ptr; }
+    static pinned_ref create(void* p) { OBJ_PIN(p); return pinned_ref(p); }
+    static pinned_ref assume(void* p) { return pinned_ref(p); }
+};
+
+// Redefine macros for C++ to use the template version
+#define jl_pinned_ref(T) pinned_ref<T>
+#define jl_pinned_ref_assume(T, ptr) pinned_ref<T>::assume(ptr)
+#define jl_pinned_ref_create(T, ptr) pinned_ref<T>::create(ptr)
+#define jl_pinned_ref_get(ref) (ref).get()
+
+#else
+
+// Primary type definition
+#define jl_pinned_ref(T) union { T* t; void* unused; }
+#define jl_pinned_ref_assume(T, ptr) ((jl_pinned_ref(T)){ .t = (ptr) })
+// Assignment macro
+#define jl_pinned_ref_set(lhs, ptr) OBJ_PIN(ptr); jl_pinned_ref_get(lhs) = ptr;
+// Getter macro
+#define jl_pinned_ref_get(ref) ((ref).t)
+
+#endif
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 // core data types ------------------------------------------------------------
 
 struct _jl_taggedvalue_bits {
@@ -396,6 +456,7 @@ typedef struct _jl_method_t {
 // can can be used as a unique dictionary key representation of a call to a particular Method
 // with a particular set of argument types
 struct _jl_method_instance_t {
+    JL_NON_MOVING // Non moving, as it is referenced in a map in JITDebugInfoRegistry
     JL_DATA_TYPE
     union {
         jl_value_t *value; // generic accessor
@@ -428,6 +489,7 @@ typedef struct _jl_opaque_closure_t {
 
 // This type represents an executable operation
 typedef struct _jl_code_instance_t {
+    JL_NON_MOVING // Pin codeinst, as they are referenced by vectors and maps in _jl_codegen_params_t
     JL_DATA_TYPE
     jl_value_t *def; // MethodInstance or ABIOverride
     jl_value_t *owner; // Compiler token this belongs to, `jl_nothing` is reserved for native
@@ -512,6 +574,7 @@ typedef struct {
 // of a type and storing all data common to different instantiations of the type,
 // including a cache for hash-consed allocation of DataType objects.
 typedef struct {
+    JL_NON_MOVING // Typenames should be pinned since they are used as metadata, and are read during scan_object
     JL_DATA_TYPE
     jl_sym_t *name;
     struct _jl_module_t *module;
@@ -592,6 +655,7 @@ typedef struct {
 } jl_datatype_layout_t;
 
 typedef struct _jl_datatype_t {
+    JL_NON_MOVING // Types should not be moved. It is also referenced from the native heap in jl_raw_alloc_t.
     JL_DATA_TYPE
     jl_typename_t *name;
     struct _jl_datatype_t *super;
@@ -793,6 +857,7 @@ typedef struct {
 } jl_uuid_t;
 
 typedef struct _jl_module_t {
+    JL_NON_MOVING // modules are referenced in jl_current_modules (htable). They cannot move.
     JL_DATA_TYPE
     jl_sym_t *name;
     struct _jl_module_t *parent;
@@ -1137,8 +1202,49 @@ struct _jl_gcframe_t {
 
 #define jl_pgcstack (jl_current_task->gcstack)
 
+#ifndef WITH_THIRD_PARTY_HEAP
 #define JL_GC_ENCODE_PUSHARGS(n)   (((size_t)(n))<<2)
 #define JL_GC_ENCODE_PUSH(n)       ((((size_t)(n))<<2)|1)
+#define JL_GC_DECODE_NROOTS(n)     (n >> 2)
+
+#define JL_GC_ENCODE_PUSHARGS_NO_TPIN(n)  JL_GC_ENCODE_PUSHARGS(n)
+#define JL_GC_ENCODE_PUSH_NO_TPIN(n)      JL_GC_ENCODE_PUSH(n)
+
+#else
+#if WITH_THIRD_PARTY_HEAP == 1 // MMTk
+// We use an extra bit (100) in the nroots value from the frame to indicate that the roots
+// in the frame are/are not transitively pinning.
+// There are currently 3 macros that encode passing nroots to the gcframe
+// and they use the two lowest bits to encode information about what is in the frame (as below).
+// To support the distinction between transtively pinning roots and non transitively pinning roots
+// on the stack, we take another bit from nroots to encode information about whether or not to
+// transitively pin the roots in the frame.
+//
+// So the ones that transitively pin look like:
+// #define JL_GC_ENCODE_PUSHARGS(n)   (((size_t)(n))<<3)
+// #define JL_GC_ENCODE_PUSH(n)       ((((size_t)(n))<<3)|1)
+// #define JL_GC_ENCODE_PUSHFRAME(n)  ((((size_t)(n))<<3)|2)
+// and the ones that do not look like:
+// #define JL_GC_ENCODE_PUSHARGS_NO_TPIN(n)   (((size_t)(n))<<3|4)
+// #define JL_GC_ENCODE_PUSH_NO_TPIN(n)       ((((size_t)(n))<<3)|5)
+// #define JL_GC_ENCODE_PUSHFRAME_NO_TPIN(n)  ((((size_t)(n))<<3)|6)
+
+// these are transitively pinning
+// #define JL_GC_ENCODE_PUSHARGS(n)   (((size_t)(n))<<3)
+// #define JL_GC_ENCODE_PUSH(n)       ((((size_t)(n))<<3)|1)
+#define JL_GC_DECODE_NROOTS(n)     (n >> 3)
+
+// these only pin the root object itself
+#define JL_GC_ENCODE_PUSHARGS_NO_TPIN(n)   (((size_t)(n))<<3|4)
+#define JL_GC_ENCODE_PUSH_NO_TPIN(n)       ((((size_t)(n))<<3)|5)
+
+#define JL_GC_ENCODE_PUSHARGS(n)   JL_GC_ENCODE_PUSHARGS_NO_TPIN(n)
+#define JL_GC_ENCODE_PUSH(n)       JL_GC_ENCODE_PUSH_NO_TPIN(n)
+
+#define JL_GC_ENCODE_PUSHARGS_TPIN(n)      (((size_t)(n))<<3)
+
+#endif
+#endif
 
 #ifdef __clang_gcanalyzer__
 

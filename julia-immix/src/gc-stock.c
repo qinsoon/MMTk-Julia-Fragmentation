@@ -806,6 +806,12 @@ inline jl_value_t *jl_gc_alloc_(jl_ptls_t ptls, size_t sz, void *ty)
     return v;
 }
 
+inline jl_value_t *jl_gc_alloc_nonmoving_(jl_ptls_t ptls, size_t sz, void *ty)
+{
+    // Just use the normal allocation, as the GC won't move objects anyway.
+    return jl_gc_alloc_(ptls, sz, ty);
+}
+
 int jl_gc_classify_pools(size_t sz, int *osize)
 {
     if (sz > GC_MAX_SZCLASS)
@@ -820,6 +826,7 @@ int jl_gc_classify_pools(size_t sz, int *osize)
 
 gc_fragmentation_stat_t gc_page_fragmentation_stats[JL_GC_N_POOLS];
 JL_DLLEXPORT double jl_gc_page_utilization_stats[JL_GC_N_MAX_POOLS];
+JL_DLLEXPORT gc_fragmentation_stat_t jl_gc_page_fragmentation_stats_export[JL_GC_N_POOLS];
 
 STATIC_INLINE void gc_update_page_fragmentation_data(jl_gc_pagemeta_t *pg) JL_NOTSAFEPOINT
 {
@@ -839,6 +846,8 @@ STATIC_INLINE void gc_dump_page_utilization_data(void) JL_NOTSAFEPOINT
             utilization -= ((double)n_freed_objs * (double)jl_gc_sizeclasses[i]) / (double)n_pages_allocd / (double)GC_PAGE_SZ;
         }
         jl_gc_page_utilization_stats[i] = utilization;
+        jl_gc_page_fragmentation_stats_export[i].n_freed_objs = n_freed_objs;
+        jl_gc_page_fragmentation_stats_export[i].n_pages_allocd = n_pages_allocd;
         jl_atomic_store_relaxed(&stats->n_freed_objs, 0);
         jl_atomic_store_relaxed(&stats->n_pages_allocd, 0);
     }
@@ -3454,6 +3463,11 @@ JL_DLLEXPORT void jl_gc_collect(jl_gc_collection_t collection)
         gc_cblist_pre_gc, (collection));
 
     if (!jl_atomic_load_acquire(&jl_gc_disable_counter)) {
+        // This thread will yield.
+        // jl_gc_notify_thread_yield does nothing for the stock GC at the point, but it may be non empty in the future,
+        // and this is a place where we should call jl_gc_notify_thread_yield.
+        // TODO: This call can be removed if requested.
+        jl_gc_notify_thread_yield(ptls, NULL);
         JL_LOCK_NOGC(&finalizers_lock); // all the other threads are stopped, so this does not make sense, right? otherwise, failing that, this seems like plausibly a deadlock
 #ifndef __clang_gcanalyzer__
         if (_jl_gc_collect(ptls, collection)) {
@@ -4069,13 +4083,42 @@ JL_DLLEXPORT void jl_gc_schedule_foreign_sweepfunc(jl_ptls_t ptls, jl_value_t *o
     arraylist_push(&ptls->gc_tls.sweep_objs, obj);
 }
 
+// added for MMTk integration
+
 void jl_gc_notify_image_load(const char* img_data, size_t len)
+{
+    // Do nothing
+}
+
+void jl_gc_notify_image_alloc(const char* img_data, size_t len)
 {
     // Do nothing
 }
 
 JL_DLLEXPORT const char* jl_gc_active_impl(void) {
     return "Built with stock GC";
+}
+
+JL_DLLEXPORT unsigned char jl_gc_pin_object(void* obj) {
+    return 0;
+}
+
+JL_DLLEXPORT unsigned char jl_gc_pin_pointer(void* ptr) {
+    return 0;
+}
+
+JL_DLLEXPORT void jl_gc_preserve_begin_hook(int n, ...) JL_NOTSAFEPOINT
+{
+    jl_unreachable();
+}
+
+JL_DLLEXPORT void jl_gc_preserve_end_hook(void) JL_NOTSAFEPOINT
+{
+    jl_unreachable();
+}
+
+JL_DLLEXPORT void jl_gc_notify_thread_yield(jl_ptls_t ptls, void* ctx) {
+    // Do nothing before a thread yields
 }
 
 #ifdef __cplusplus

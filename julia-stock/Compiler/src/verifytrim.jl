@@ -110,7 +110,7 @@ end
 function verify_print_error(io::IOContext{IO}, desc::CallMissing, parents::ParentMap)
     (; codeinst, codeinfo, sptypes, stmtidx, desc) = desc
     frames = verify_create_stackframes(codeinst, stmtidx, parents)
-    print(io, desc, " from statement ")
+    print(io, desc, " from ")
     verify_print_stmt(io, codeinfo, sptypes, stmtidx)
     Base.show_backtrace(io, frames)
     print(io, "\n\n")
@@ -181,11 +181,6 @@ function verify_codeinstance!(codeinst::CodeInstance, codeinfo::CodeInfo, inspec
             if edge isa CodeInstance
                 haskey(parents, edge) || (parents[edge] = (codeinst, i))
                 edge in inspected && continue
-                edge_mi = get_ci_mi(edge)
-                if edge_mi === edge.def
-                    ci = get(caches, edge_mi, nothing)
-                    ci isa CodeInstance && continue # assume that only this_world matters for trim
-                end
             end
             # TODO: check for calls to Base.atexit?
         elseif isexpr(stmt, :call)
@@ -292,7 +287,7 @@ function get_verify_typeinf_trim(codeinfos::Vector{Any})
                     # TODO: should we find a way to indicate to the user that this gets called via ccallable?
                     # parent[ci] = something
                     asrt = ci.rettype
-                    true
+                    ci in inspected
                 else
                     false
                 end
@@ -330,14 +325,6 @@ function verify_typeinf_trim(io::IO, codeinfos::Vector{Any}, onlywarn::Bool)
         # TODO: should we coalesce any of these stacktraces to minimize spew?
         verify_print_error(io, desc, parents)
     end
-
-    ## TODO: compute and display the minimum and/or full call graph instead of merely the first parent stacktrace?
-    #for i = 1:length(codeinfos)
-    #    item = codeinfos[i]
-    #    if item isa CodeInstance
-    #        println(item, "::", item.rettype)
-    #    end
-    #end
 
     let severity = 0
         if counts[1] > 0 || counts[2] > 0

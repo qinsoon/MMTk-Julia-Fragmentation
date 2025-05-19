@@ -17,10 +17,13 @@ use std::sync::atomic::AtomicIsize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, RwLock};
 
+use crate::julia_types::jl_sym_t;
+
 pub mod active_plan;
 pub mod api;
 mod build_info;
 pub mod collection;
+pub mod conservative;
 pub mod gc_trigger;
 pub mod object_model;
 pub mod reference_glue;
@@ -100,6 +103,7 @@ type ProcessSlotFn = *const extern "C" fn(closure: Address, slot: Address);
 
 #[allow(improper_ctypes)]
 extern "C" {
+    pub fn jl_symbol_name(tn: *mut jl_sym_t) -> *mut i8;
     pub fn jl_gc_scan_julia_exc_obj(obj: Address, closure: Address, process_slot: ProcessSlotFn);
     pub fn jl_gc_get_stackbase(tid: i16) -> usize;
     pub fn jl_throw_out_of_memory_error();
@@ -120,6 +124,33 @@ extern "C" {
     pub fn jl_gc_get_owner_address_to_mmtk(m: Address) -> Address;
     pub fn jl_gc_genericmemory_how(m: Address) -> usize;
     pub fn jl_gc_get_max_memory() -> usize;
+    pub fn jl_active_task_stack(
+        task: *const crate::julia_types::jl_task_t,
+        active_start: *mut Address,
+        active_end: *mut Address,
+        total_start: *mut Address,
+        total_end: *mut Address,
+    );
+    pub static jl_true: *mut crate::julia_types::jl_value_t;
+}
+
+#[macro_export]
+macro_rules! early_return_for_non_moving_build {
+    ($ret_val:expr) => {
+        if cfg!(feature = "non_moving") {
+            return $ret_val;
+        }
+    };
+}
+
+/// Skip some methods if the current GC does not move objects
+#[macro_export]
+macro_rules! early_return_for_current_gc {
+    () => {
+        if !crate::collection::is_current_gc_moving() {
+            return;
+        }
+    };
 }
 
 pub(crate) fn set_panic_hook() {
