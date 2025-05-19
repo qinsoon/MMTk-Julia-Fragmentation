@@ -40,7 +40,7 @@ function build_julia {
     cd $MMTK_JULIA_FRAGMENTATION_ROOT/$1
     make -C ../mmtk-julia clean
     make cleanall
-    make
+    MMTK_JULIA_DIR=$MMTK_JULIA_FRAGMENTATION_ROOT/mmtk-julia make
     cd - > /dev/null
     print_green "Successfully built $1"
 }
