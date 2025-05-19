@@ -97,6 +97,49 @@ function run_with_retries {
     done
 }
 
+# Define the Julia variants and their Make.user contents
+declare -A MAKE_USER_CONTENTS
+MAKE_USER_CONTENTS["julia-stock"]=""
+MAKE_USER_CONTENTS["julia-immix"]="WITH_THIRD_PARTY_GC=MMTK
+MMTK_PLAN=Immix
+MMTK_MOVING=1
+MMTK_MOVING_STRESS=0
+USE_BINARYBUILDER_MMTK_JULIA=0"
+MAKE_USER_CONTENTS["julia-immix-nonmoving"]="WITH_THIRD_PARTY_GC=MMTK
+MMTK_PLAN=Immix
+MMTK_MOVING=0
+MMTK_MOVING_STRESS=0
+USE_BINARYBUILDER_MMTK_JULIA=0"
+MAKE_USER_CONTENTS["julia-immix-moving-upstream"]="WITH_THIRD_PARTY_GC=MMTK
+MMTK_PLAN=Immix
+MMTK_MOVING=1
+MMTK_MOVING_STRESS=1
+USE_BINARYBUILDER_MMTK_JULIA=0"
+
+function ensure_repo_exists_and_configured {
+    VARIANT=$1
+    VARIANT_DIR=$MMTK_JULIA_FRAGMENTATION_ROOT/$VARIANT
+    JULIA_REPO_URL="https://github.com/mmtk/julia.git"
+    JULIA_BRANCH="mmtk-support-moving-upstream"
+
+    if [ ! -d "$VARIANT_DIR" ]; then
+        print_green "Cloning $VARIANT from $JULIA_REPO_URL (branch: $JULIA_BRANCH)"
+        git clone --branch $JULIA_BRANCH --single-branch $JULIA_REPO_URL $VARIANT_DIR
+    else
+        print_green "$VARIANT already exists, skipping clone"
+    fi
+
+    MAKE_USER_PATH="$VARIANT_DIR/Make.user"
+    print_green "Setting up Make.user for $VARIANT"
+    echo "${MAKE_USER_CONTENTS[$VARIANT]}" > "$MAKE_USER_PATH"
+}
+
+# Ensure all required Julia variants are checked out and configured
+ensure_repo_exists_and_configured julia-stock
+ensure_repo_exists_and_configured julia-immix
+ensure_repo_exists_and_configured julia-immix-nonmoving
+ensure_repo_exists_and_configured julia-immix-moving-upstream
+
 # Run the benchmarks for all GC implementations
 run_with_retries julia-stock
 RUST_BACKTRACE=1 run_with_retries julia-immix # non-stress moving
