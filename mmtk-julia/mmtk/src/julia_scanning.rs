@@ -1,9 +1,9 @@
 use crate::api::mmtk_object_is_managed_by_mmtk;
+use crate::jl_symbol_name;
 use crate::julia_types::*;
 use crate::slots::JuliaVMSlot;
 use crate::slots::OffsetSlot;
 use crate::JULIA_BUFF_TAG;
-use crate::jl_symbol_name;
 use memoffset::offset_of;
 use mmtk::memory_manager;
 use mmtk::util::{Address, ObjectReference};

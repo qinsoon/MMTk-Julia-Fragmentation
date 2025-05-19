@@ -195,50 +195,56 @@ pub extern "C" fn mmtk_block_thread_for_gc() {
     AtomicIsize::store(&USER_TRIGGERED_GC, 0, Ordering::SeqCst);
 }
 
+// This will dump the block stats for the last GC (it overwrites the file each time)
+// Setting it to true will make the runs much slower!!!
+const DUMP_BLOCK_STATS_FOR_HISTOGRAM: bool = false;
+
 pub fn dump_immix_block_stats() {
     use mmtk::util::Address;
     use mmtk::util::ObjectReference;
     use std::fs::OpenOptions;
     use std::io::Write;
 
-    let mut file = OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .open("/home/eduardo/block-stats-script.log") // ← Replace with your desired file path
-        .expect("Unable to open log file");
+    if DUMP_BLOCK_STATS_FOR_HISTOGRAM {
+        let mut file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open("~/block-stats.log") // ← Replace with your desired file path
+            .expect("Unable to open log file");
 
-    SINGLETON.enumerate_objects(
-        |space_name: &str, block_start: Address, block_size: usize, object: ObjectReference| {
-            if space_name == "immix" {
-                writeln!(
-                    file,
-                    "Block: {}, object: {} ({}), size: {}, pinned: {}",
-                    block_start,
-                    object,
-                    unsafe {
-                        crate::julia_scanning::get_julia_object_type(object.to_raw_address())
-                    },
-                    unsafe { crate::object_model::get_so_object_size(object) },
-                    mmtk::memory_manager::is_pinned(object),
-                )
-                .expect("Unable to write to log file");
-            } else if space_name == "nonmoving" {
-                writeln!(
-                    file,
-                    "Nonmoving: {}, object: {} ({}), size: {}, reachable: {}",
-                    block_start,
-                    object,
-                    unsafe {
-                        crate::julia_scanning::get_julia_object_type(object.to_raw_address())
-                    },
-                    unsafe { crate::object_model::get_so_object_size(object) },
-                    object.is_reachable(),
-                )
-                .expect("Unable to write to log file");
-            }
-        },
-    );
+        SINGLETON.enumerate_objects(
+            |space_name: &str, block_start: Address, block_size: usize, object: ObjectReference| {
+                if space_name == "immix" {
+                    writeln!(
+                        file,
+                        "Block: {}, object: {} ({}), size: {}, pinned: {}",
+                        block_start,
+                        object,
+                        unsafe {
+                            crate::julia_scanning::get_julia_object_type(object.to_raw_address())
+                        },
+                        unsafe { crate::object_model::get_so_object_size(object) },
+                        mmtk::memory_manager::is_pinned(object),
+                    )
+                    .expect("Unable to write to log file");
+                } else if space_name == "nonmoving" {
+                    writeln!(
+                        file,
+                        "Nonmoving: {}, object: {} ({}), size: {}, reachable: {}",
+                        block_start,
+                        object,
+                        unsafe {
+                            crate::julia_scanning::get_julia_object_type(object.to_raw_address())
+                        },
+                        unsafe { crate::object_model::get_so_object_size(object) },
+                        object.is_reachable(),
+                    )
+                    .expect("Unable to write to log file");
+                }
+            },
+        );
+    }
 
     print_fragmentation();
 }
