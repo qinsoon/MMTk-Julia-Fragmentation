@@ -7,9 +7,10 @@ const STOCK_GC_FRAGMENTATION_PATHS = [
 ]
 
 const MMTK_JULIA_VERSIONS = [
-    "julia-immix-moving-upstream",
-    "julia-immix-nonmoving",
-    "julia-immix"
+    "julia-immix",
+    "julia-immix-non-moving",
+    "julia-immix-always-moving",
+    "julia-immix-max-moving"
 ]
 
 const MMTK_GC_FRAGMENTATION_PATHS = vcat([
