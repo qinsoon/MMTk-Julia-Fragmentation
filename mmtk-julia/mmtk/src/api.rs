@@ -51,6 +51,10 @@ pub extern "C" fn mmtk_gc_init(
             builder.options.plan.set(plan);
         }
 
+        if cfg!(feature = "immix_max_moving") {
+            builder.options.immix_defrag_headroom_percent.set(50);
+        }
+
         // Set heap size
         let success =
             // By default min and max heap size are 0, and we use the Stock GC heuristics

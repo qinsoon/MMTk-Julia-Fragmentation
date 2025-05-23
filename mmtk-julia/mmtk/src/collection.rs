@@ -148,6 +148,7 @@ impl Collection<JuliaVM> for VMCollection {
 
     fn out_of_memory(_tls: VMThread, _err_kind: AllocationError) {
         println!("Out of Memory!");
+        panic!();
         unsafe { jl_throw_out_of_memory_error() };
     }
 
@@ -210,7 +211,7 @@ pub fn dump_immix_block_stats() {
             .create(true)
             .write(true)
             .truncate(true)
-            .open("~/block-stats.log") // ← Replace with your desired file path
+            .open("/home/eduardo/output-block-stats.log") // ← Replace with your desired file path
             .expect("Unable to open log file");
 
         SINGLETON.enumerate_objects(
