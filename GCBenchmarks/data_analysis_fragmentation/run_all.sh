@@ -72,7 +72,7 @@ function run_benchmarks {
     # MMTK_MIN_HSIZE=1200 MMTK_MAX_HSIZE=1200 
     # If using stress, then set the heap size to 3072 (stress will force a GC every 50MB allocated)
     # MMTK_MIN_HSIZE=3072 MMTK_MAX_HSIZE=3072 MMTK_STRESS_FACTOR=52428800 
-    MMTK_COUNT_LIVE_BYTES_IN_GC=true $JULIA_BIN_PATH --project=. inference_benchmarks.jl 2>&1 | tee $LOGS_DIR/inference_benchmark_$1.log
+    MMTK_MIN_HSIZE=1200 MMTK_MAX_HSIZE=1200 MMTK_COUNT_LIVE_BYTES_IN_GC=true $JULIA_BIN_PATH --project=. inference_benchmarks.jl 2>&1 | tee $LOGS_DIR/inference_benchmark_$1.log
     cd - > /dev/null
 }
 
@@ -156,11 +156,11 @@ ensure_repo_exists_and_configured julia-immix-always-moving
 ensure_repo_exists_and_configured julia-immix-max-moving
 
 # Run the benchmarks for all GC implementations
-# RUST_BACKTRACE=1 run_with_retries julia-immix
-RUST_BACKTRACE=1 run_with_retries julia-immix-non-moving
-# RUST_BACKTRACE=1 run_with_retries julia-immix-always-moving
 RUST_BACKTRACE=1 run_with_retries julia-immix-max-moving
-# run_with_retries julia-stock
+RUST_BACKTRACE=1 run_with_retries julia-immix-always-moving
+RUST_BACKTRACE=1 run_with_retries julia-immix
+RUST_BACKTRACE=1 run_with_retries julia-immix-non-moving
+run_with_retries julia-stock
 
 # Parse the logs
 parse_fragmentation_logs
