@@ -1,0 +1,32 @@
+Utilization in pool allocator: 0.128884, 8651344 live bytes and 67125248 bytes in pages
+Utilization in pool allocator: 0.234050, 15710656 live bytes and 67125248 bytes in pages
+Utilization in pool allocator: 0.381954, 25638768 live bytes and 67125248 bytes in pages
+Utilization in pool allocator: 0.240836, 32332304 live bytes and 134250496 bytes in pages
+[ Info: Setting GC memory pressure callback
+Utilization in pool allocator: 0.269460, 36175120 live bytes and 134250496 bytes in pages
+Utilization in pool allocator: 0.285084, 38272672 live bytes and 134250496 bytes in pages
+Utilization in pool allocator: 0.325725, 43728688 live bytes and 134250496 bytes in pages
+Utilization in pool allocator: 0.270855, 54543584 live bytes and 201375744 bytes in pages
+Utilization in pool allocator: 0.236002, 63366880 live bytes and 268500992 bytes in pages
+Utilization in pool allocator: 0.265482, 71282248 live bytes and 268500992 bytes in pages
+Utilization in pool allocator: 0.285990, 76788664 live bytes and 268500992 bytes in pages
+Utilization in pool allocator: 0.255041, 85598408 live bytes and 335626240 bytes in pages
+Utilization in pool allocator: 0.232218, 93525976 live bytes and 402751488 bytes in pages
+Utilization in pool allocator: 0.257392, 103664904 live bytes and 402751488 bytes in pages
+Utilization in pool allocator: 0.221592, 104120872 live bytes and 469876736 bytes in pages
+Utilization in pool allocator: 0.165331, 77685104 live bytes and 469876736 bytes in pages
+Utilization in pool allocator: 0.190227, 87653456 live bytes and 460783616 bytes in pages
+Utilization in pool allocator: 0.185236, 99472080 live bytes and 537001984 bytes in pages
+Utilization in pool allocator: 0.206295, 110780912 live bytes and 537001984 bytes in pages
+Utilization in pool allocator: 0.229682, 123339440 live bytes and 537001984 bytes in pages
+Utilization in pool allocator: 0.247568, 132944288 live bytes and 537001984 bytes in pages
+Utilization in pool allocator: 0.270401, 145206008 live bytes and 537001984 bytes in pages
+Utilization in pool allocator: 0.262055, 158314776 live bytes and 604127232 bytes in pages
+Utilization in pool allocator: 0.307585, 185820200 live bytes and 604127232 bytes in pages
+Utilization in pool allocator: 0.294584, 197740248 live bytes and 671252480 bytes in pages
+Utilization in pool allocator: 0.299683, 200353096 live bytes and 668549120 bytes in pages
+Utilization in pool allocator: 0.289239, 220666768 live bytes and 762920960 bytes in pages
+Utilization in pool allocator: 0.277192, 236776016 live bytes and 854196224 bytes in pages
+Utilization in pool allocator: 0.301456, 255961688 live bytes and 849084416 bytes in pages
+Utilization in pool allocator: 0.330497, 280620032 live bytes and 849084416 bytes in pages
+(value = nothing, times = 0x000000077760c234, gc_diff = Base.GC_Diff(8782036016, 125566, 0, 168227654, 625, 124888, 2302129178, 23, 2), gc_start = Base.GC_Num(139698824, 0, 0, 9257, 0, 10196209, 1667, 6295, 574569965, 456466776, 0x0000000002bc0000, 7, 2, 170217900, 155111624, 16140, 22162, 127650, 7234205, 162983515, 1824, 55235242, 29833914, 51047, 2549569, 519333290, 115439, 796711606146802, 796711938868050), gc_end = Base.GC_Num(90002536, 0, 0, 134823, 0, 178423863, 2292, 131183, 2876699143, 9288199080, 0x0000000002bc0000, 30, 4, 435967738, 902913376, 21010, 23555, 592639, 65755465, 60510621, 1984, 924344159, 838636154, 11050535, 27982816, 1952349365, 194347, 796738322322939, 796744446821051))
