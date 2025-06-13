@@ -1,0 +1,11 @@
+[ Info: Setting GC memory pressure callback
+Utilization in pool allocator: 0.089611, 52342104 live bytes and 584105984 bytes in pages
+Utilization in pool allocator: 0.089149, 78485840 live bytes and 880394240 bytes in pages
+Utilization in pool allocator: 0.106982, 104887376 live bytes and 980418560 bytes in pages
+Utilization in pool allocator: 0.125236, 130731008 live bytes and 1043873792 bytes in pages
+Utilization in pool allocator: 0.148532, 162473440 live bytes and 1093861376 bytes in pages
+Utilization in pool allocator: 0.174406, 197219504 live bytes and 1130807296 bytes in pages
+Utilization in pool allocator: 0.190958, 219343488 live bytes and 1148649472 bytes in pages
+Utilization in pool allocator: 0.208860, 239906456 live bytes and 1148649472 bytes in pages
+Utilization in pool allocator: 0.235232, 270198840 live bytes and 1148649472 bytes in pages
+(value = nothing, times = 0x0000000763643233, gc_diff = Base.GC_Diff(8783479656, 125559, 0, 168281574, 625, 130241, 2061448065, 9, 1), gc_start = Base.GC_Num(595997920, 0, 0, 9258, 0, 10196327, 1664, 0, 0, 0, 0x0000000002bc0000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0), gc_end = Base.GC_Num(266759976, 0, 0, 134817, 0, 178477901, 2289, 130241, 2061448065, 9112717600, 0x0000000002bc0000, 9, 1, 520384784, 1253671960, 22182, 31851, 227812, 78580031, 73544179, 2334, 821790585, 642533390, 141904356, 25485026, 1239655797, 161934, 860446172970347, 860449783600337))

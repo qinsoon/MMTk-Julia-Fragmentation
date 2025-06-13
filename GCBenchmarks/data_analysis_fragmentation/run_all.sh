@@ -1,7 +1,12 @@
 #!/bin/bash
 
+# Only execute this script when the current DIR is at this script dir.
+
 set -xe
 
+# Do repo checkout and build -- this is useful when we have builds, and want to repeat experiments, we can set this to 0 and skip checkout and build.
+CHECKOUT_AND_BUILD=1
+# If we don't skip build, always do clean build?
 CLEAN_BUILD=1
 
 # Print line in green
@@ -178,17 +183,19 @@ function ensure_binding_exists {
     fi
 }
 
-# Ensure all required Julia variants are checked out and configured
-ensure_binding_exists
+if [ "$CHECKOUT_AND_BUILD" = "1" ]; then
+    # Ensure all required Julia variants are checked out and configured
+    ensure_binding_exists
 
-ensure_repo_exists_and_configured julia-stock
-ensure_repo_exists_and_configured julia-immix-non-moving
-ensure_repo_exists_and_configured julia-immix-max-moving
+    ensure_repo_exists_and_configured julia-stock
+    ensure_repo_exists_and_configured julia-immix-non-moving
+    ensure_repo_exists_and_configured julia-immix-max-moving
 
-# Build Julia
-build_julia julia-stock
-build_julia julia-immix-non-moving
-build_julia julia-immix-max-moving
+    # Build Julia
+    build_julia julia-stock
+    build_julia julia-immix-non-moving
+    build_julia julia-immix-max-moving
+fi
 
 # Run the benchmarks for all GC implementations
 export RUST_BACKTRACE=1
